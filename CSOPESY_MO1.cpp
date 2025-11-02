@@ -23,7 +23,7 @@ std::vector<std::thread> cpu_threads;
 std::random_device rd;
 std::mt19937 rng(rd());
 
-// Config variables
+// Config variables from config.txt
 int num_cpu;
 std::string scheduler;
 int quantum_cycles;
@@ -379,20 +379,21 @@ void display_process_screen(const std::string& process_name) {
     std::cout << "ID: " << p->pid << "\n";
 
     if (p->finished) {
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            p->end_time - p->start_time).count();
-        std::cout << "Finished!\n";
-        std::cout << "Execution time: " << duration << "ms\n";
+        std::cout << "\nFinished!\n\n";
     }
     else {
         std::cout << "Current instruction line: " << p->pc << "\n";
         std::cout << "Lines of code: " << p->total_instructions << "\n";
     }
 
-    std::cout << "\n--- Logs ---\n";
+    std::cout << "--- Logs ---\n";
     int start = std::max(0, (int)p->screenBuffer.size() - 20);
     for (int i = start; i < (int)p->screenBuffer.size(); i++) {
         std::cout << p->screenBuffer[i] << "\n";
+    }
+
+    if (p->finished) {
+        std::cout << "\nFinished!\n";
     }
     std::cout << "\n";
 }
@@ -425,20 +426,35 @@ void screen_ls() {
     std::cout << "Cores available: " << (num_cpu - cores_used) << "\n";
     std::cout << "\nRunning processes: " << running << "\n";
     std::cout << "Finished processes: " << finished << "\n";
-    std::cout << "\n--- Process List ---\n";
+    std::cout << "\n--------------------------------------\n";
 
     for (const auto& pair : all_processes) {
         PCB* p = pair.second;
-        std::cout << p->name << " (PID: " << p->pid << ") ";
+
+        // Format: process_name (MM/DD/YYYY HH:MM:SS AM/PM) Core: X   current/total
+        auto time = std::chrono::system_clock::to_time_t(p->start_time);
+        std::tm timeinfo;
+#ifdef _WIN32
+        localtime_s(&timeinfo, &time);
+#else
+        localtime_r(&time, &timeinfo);
+#endif
+
+        std::stringstream ss;
+        ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
+
+        std::cout << p->name << "   (" << ss.str() << ")   ";
+
         if (p->finished) {
-            std::cout << "- Finished";
+            std::cout << "Finished   ";
         }
         else {
-            std::cout << "- Running on Core " << p->cpu_core;
+            std::cout << "Core: " << p->cpu_core << "   ";
         }
-        std::cout << " - " << p->pc << "/" << p->total_instructions << " instructions\n";
+
+        std::cout << p->pc << " / " << p->total_instructions << "\n";
     }
-    std::cout << "\n";
+    std::cout << "--------------------------------------\n\n";
 }
 
 void report_util() {
@@ -457,9 +473,17 @@ void report_util() {
     }
 
     int running = 0, finished = 0;
+    std::vector<PCB*> running_processes, finished_processes;
+
     for (const auto& pair : all_processes) {
-        if (pair.second->finished) finished++;
-        else running++;
+        if (pair.second->finished) {
+            finished++;
+            finished_processes.push_back(pair.second);
+        }
+        else {
+            running++;
+            running_processes.push_back(pair.second);
+        }
     }
 
     report << "CPU Utilization Report\n";
@@ -470,13 +494,44 @@ void report_util() {
     report << "Running processes: " << running << "\n";
     report << "Finished processes: " << finished << "\n\n";
 
-    report << "--- Process Details ---\n";
-    for (const auto& pair : all_processes) {
-        PCB* p = pair.second;
-        report << p->name << " (PID: " << p->pid << ")\n";
-        report << "  Status: " << (p->finished ? "Finished" : "Running") << "\n";
-        report << "  Progress: " << p->pc << "/" << p->total_instructions << "\n\n";
+    report << "--------------------------------------\n";
+
+    // Running processes
+    report << "Running processes:\n";
+    for (PCB* p : running_processes) {
+        auto time = std::chrono::system_clock::to_time_t(p->start_time);
+        std::tm timeinfo;
+#ifdef _WIN32
+        localtime_s(&timeinfo, &time);
+#else
+        localtime_r(&time, &timeinfo);
+#endif
+
+        std::stringstream ss;
+        ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
+
+        report << p->name << "   (" << ss.str() << ")   Core: "
+            << p->cpu_core << "   " << p->pc << " / " << p->total_instructions << "\n";
     }
+
+    report << "\nFinished processes:\n";
+    for (PCB* p : finished_processes) {
+        auto time = std::chrono::system_clock::to_time_t(p->start_time);
+        std::tm timeinfo;
+#ifdef _WIN32
+        localtime_s(&timeinfo, &time);
+#else
+        localtime_r(&time, &timeinfo);
+#endif
+
+        std::stringstream ss;
+        ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
+
+        report << p->name << "   (" << ss.str() << ")   Finished   "
+            << p->pc << " / " << p->total_instructions << "\n";
+    }
+
+    report << "--------------------------------------\n";
 
     report.close();
     std::cout << "Report generated: csopesy-log.txt\n";
@@ -530,7 +585,18 @@ int main() {
             std::string cmd;
             iss >> cmd;
 
-            if (cmd == "initialize") {
+            if (cmd == "exit") {
+                if (current_screen == PROCESS_SCREEN) {
+                    current_screen = MAIN_MENU;
+                    current_process_name = "";
+                    clear_screen();
+                    std::cout << "Returned to main menu.\n";
+                }
+                else {
+                    is_running = false;
+                }
+            }
+            else if (cmd == "initialize") {
                 std::ifstream configFile("config.txt");
                 if (!configFile.is_open()) {
                     std::cerr << "ERROR: config.txt could not be opened.\n";
@@ -553,7 +619,7 @@ int main() {
                         else if (key == "delay-per-exec")
                             delays_per_exec = std::stoi(value);
                     }
-
+                   
                     cpu_busy.resize(num_cpu);
                     cpu_process_count.resize(num_cpu, 0);
 
@@ -621,6 +687,11 @@ int main() {
                 }
             }
             else if (cmd == "screen") {
+                if (!initialized) {
+                    std::cout << "ERROR: Console not initialized.\n";
+                    continue;
+                }
+
                 std::string subcmd;
                 iss >> subcmd;
 
@@ -656,8 +727,13 @@ int main() {
                         std::cout << "Usage: screen -r <process_name>\n";
                     }
                     else {
-                        std::lock_guard<std::mutex> lock(process_map_mutex);
-                        if (all_processes.find(proc_name) != all_processes.end()) {
+                        bool found = false;
+                        {
+                            std::lock_guard<std::mutex> lock(process_map_mutex);
+                            found = (all_processes.find(proc_name) != all_processes.end());
+                        }
+
+                        if (found) {
                             current_screen = PROCESS_SCREEN;
                             current_process_name = proc_name;
                             display_process_screen(proc_name);
@@ -677,7 +753,7 @@ int main() {
                 }
 
                 else {
-                    std::cout << "Usage: screen -s <name> | screen -r <name>\n";
+                    std::cout << "Usage: screen -s <name> | screen -r <name> | screen -ls\n";
                 }
             }
             else if (cmd == "process-smi") {
@@ -685,7 +761,7 @@ int main() {
                     process_smi();
                 }
                 else {
-                    std::cout << "Not in a process screen. Use 'screen -r <name>' first.\n";
+                    std::cout << "Not in a process screen. Use 'screen -r <name>' | 'screen -s <name>' first.\n";
                 }
             }
             else if (cmd == "exit") {
