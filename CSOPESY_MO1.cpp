@@ -541,6 +541,7 @@ void report_util() {
 void keyboard_handler_thread_func() {
     std::string command_line;
     while (is_running) {
+        gotoxy(1, 11 + commandCount);
         std::cout << "Command >> ";
         std::getline(std::cin, command_line);
 
@@ -550,6 +551,7 @@ void keyboard_handler_thread_func() {
 
             std::unique_lock<std::mutex> lock(command_queue_mutex);
             command_queue.push(command_line);
+            commandCount++;
             lock.unlock();
         }
     }
@@ -557,9 +559,8 @@ void keyboard_handler_thread_func() {
 
 // --- Main Function ---
 int main() {
-    std::thread keyboard_handler_thread(keyboard_handler_thread_func);
-
     clear_screen();
+    gotoxy(1, 1);
     std::cout << "CSOPESY CPU Scheduler Simulator\n\n";
     std::cout << "Group Developers:\n";
     std::cout << "1. Matthew Copon\n";
@@ -567,6 +568,9 @@ int main() {
     std::cout << "3. Ericson Tan\n";
     std::cout << "4. Joaquin Cardino\n";
     std::cout << "Version: 1.00.00\n\n";
+    gotoxy(12, 11 + commandCount);
+
+    std::thread keyboard_handler_thread(keyboard_handler_thread_func);
 
     int next_pid = 1;
 
@@ -599,7 +603,9 @@ int main() {
             else if (cmd == "initialize") {
                 std::ifstream configFile("config.txt");
                 if (!configFile.is_open()) {
+                    gotoxy(12, 10 + commandCount);
                     std::cerr << "ERROR: config.txt could not be opened.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::string key, value;
@@ -629,10 +635,14 @@ int main() {
             }
             else if (cmd == "scheduler-test") {
                 if (!initialized) {
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
                 else if (scheduler_running) {
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Scheduler already running.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::cout << "Scheduler started.\n";
@@ -661,7 +671,9 @@ int main() {
             }
             else if (cmd == "scheduler-stop") {
                 if (!scheduler_running) {
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Scheduler not running.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::cout << "Stopping scheduler...\n";
@@ -676,11 +688,15 @@ int main() {
                     cpu_threads.clear();
 
                     std::cout << "Scheduler stopped.\n";
+
+                    commandCount++;
                 }
             }
             else if (cmd == "report-util") {
                 if (!initialized) {
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     report_util();
@@ -688,7 +704,9 @@ int main() {
             }
             else if (cmd == "screen") {
                 if (!initialized) {
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
+                    gotoxy(12, 11 + commandCount);
                     continue;
                 }
 
@@ -745,7 +763,9 @@ int main() {
                 }
                 else if (subcmd == "-ls") {
                     if (!initialized) {
+                        gotoxy(12, 10 + commandCount);
                         std::cout << "ERROR: Console not initialized.\n";
+                        gotoxy(12, 11 + commandCount);
                     }
                     else {
                         screen_ls();
@@ -776,7 +796,9 @@ int main() {
                 }
             }
             else {
-                std::cout << "Command not found.\n";
+                gotoxy(12, 10 + commandCount);
+                std::cout << "Command not found.";
+                gotoxy(12, 11 + commandCount);
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
