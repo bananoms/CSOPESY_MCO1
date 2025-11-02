@@ -630,7 +630,9 @@ int main() {
                     cpu_process_count.resize(num_cpu, 0);
 
                     initialized = true;
+                    gotoxy(12, 10 + commandCount);
                     std::cout << "Console initialized successfully.\n";
+                    gotoxy(12, 11 + commandCount);
                 }
             }
             else if (cmd == "scheduler-test") {
@@ -650,6 +652,7 @@ int main() {
 
                     for (int i = 0; i < num_cpu; i++) {
                         cpu_threads.emplace_back(cpu_worker, i);
+                        commandCount++;
                     }
 
                     process_generator_thread = std::thread([&next_pid]() {
