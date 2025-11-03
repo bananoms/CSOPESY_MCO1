@@ -41,8 +41,6 @@ std::vector<bool> cpu_busy;
 std::vector<int> cpu_process_count;
 std::mutex cpu_stats_mutex;
 
-int commandCount = 0;
-
 // ----- Process Instruction Definition -----
 enum InstructionType {
     PRINT, DECLARE, ADD, SUBTRACT, SLEEP, FOR_LOOP
@@ -72,13 +70,13 @@ struct PCB {
     std::vector<std::string> screenBuffer;
     std::chrono::system_clock::time_point start_time;
     std::chrono::system_clock::time_point end_time;
-    int cpu_core = -1; // Which CPU core is running this
+    int cpu_core = -1;
     int total_instructions = 0;
 };
 
 // --- Process Management ---
-std::unordered_map<std::string, PCB*> all_processes; // name -> PCB
-std::unordered_map<int, PCB*> pid_to_process; // pid -> PCB
+std::unordered_map<std::string, PCB*> all_processes;
+std::unordered_map<int, PCB*> pid_to_process;
 std::mutex process_map_mutex;
 
 std::queue<PCB*> readyQueue;
@@ -93,10 +91,6 @@ std::string current_process_name = "";
 std::mutex screen_mutex;
 
 // --- Utility Functions ---
-void gotoxy(int x, int y) {
-    std::cout << "\033[" << y << ";" << x << "H";
-}
-
 void clear_screen() {
     std::cout << "\033[2J\033[1;1H";
 }
@@ -105,12 +99,11 @@ std::string get_timestamp() {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
 
-    // Use localtime_s for Windows (thread-safe)
     std::tm timeinfo;
 #ifdef _WIN32
     localtime_s(&timeinfo, &time);
 #else
-    localtime_r(&time, &timeinfo);  // For Linux/Unix
+    localtime_r(&time, &timeinfo);
 #endif
 
     std::stringstream ss;
@@ -276,8 +269,6 @@ void execute_instruction(PCB& p, Instruction& inst) {
 
 // --- CPU Worker ---
 void cpu_worker(int id) {
-    std::cout << "[CPU " << id << "] Worker started.\n";
-
     PCB* current = nullptr;
 
     while (scheduler_running) {
@@ -359,8 +350,6 @@ void cpu_worker(int id) {
     if (current != nullptr) {
         delete current;
     }
-
-    std::cout << "[CPU " << id << "] Worker exiting.\n";
 }
 
 // --- Screen Commands ---
@@ -386,7 +375,7 @@ void display_process_screen(const std::string& process_name) {
         std::cout << "Lines of code: " << p->total_instructions << "\n";
     }
 
-    std::cout << "--- Logs ---\n";
+    std::cout << "\n--- Logs ---\n";
     int start = std::max(0, (int)p->screenBuffer.size() - 20);
     for (int i = start; i < (int)p->screenBuffer.size(); i++) {
         std::cout << p->screenBuffer[i] << "\n";
@@ -431,7 +420,6 @@ void screen_ls() {
     for (const auto& pair : all_processes) {
         PCB* p = pair.second;
 
-        // Format: process_name (MM/DD/YYYY HH:MM:SS AM/PM) Core: X   current/total
         auto time = std::chrono::system_clock::to_time_t(p->start_time);
         std::tm timeinfo;
 #ifdef _WIN32
@@ -443,13 +431,13 @@ void screen_ls() {
         std::stringstream ss;
         ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
 
-        std::cout << p->name << "   (" << ss.str() << ")   ";
+        std::cout << p->name << "    (" << ss.str() << ")    ";
 
         if (p->finished) {
-            std::cout << "Finished   ";
+            std::cout << "Finished    ";
         }
         else {
-            std::cout << "Core: " << p->cpu_core << "   ";
+            std::cout << "Core: " << p->cpu_core << "    ";
         }
 
         std::cout << p->pc << " / " << p->total_instructions << "\n";
@@ -496,7 +484,6 @@ void report_util() {
 
     report << "--------------------------------------\n";
 
-    // Running processes
     report << "Running processes:\n";
     for (PCB* p : running_processes) {
         auto time = std::chrono::system_clock::to_time_t(p->start_time);
@@ -510,8 +497,8 @@ void report_util() {
         std::stringstream ss;
         ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
 
-        report << p->name << "   (" << ss.str() << ")   Core: "
-            << p->cpu_core << "   " << p->pc << " / " << p->total_instructions << "\n";
+        report << p->name << "    (" << ss.str() << ")    Core: "
+            << p->cpu_core << "    " << p->pc << " / " << p->total_instructions << "\n";
     }
 
     report << "\nFinished processes:\n";
@@ -527,7 +514,7 @@ void report_util() {
         std::stringstream ss;
         ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
 
-        report << p->name << "   (" << ss.str() << ")   Finished   "
+        report << p->name << "    (" << ss.str() << ")    Finished    "
             << p->pc << " / " << p->total_instructions << "\n";
     }
 
@@ -541,18 +528,18 @@ void report_util() {
 void keyboard_handler_thread_func() {
     std::string command_line;
     while (is_running) {
-        gotoxy(1, 11 + commandCount);
-        std::cout << "Command >> ";
-        std::getline(std::cin, command_line);
+        if (std::getline(std::cin, command_line)) {
+            if (!command_line.empty()) {
+                if (command_line == "exit")
+                    is_running = false;
 
-        if (!command_line.empty()) {
-            if (command_line == "exit")
-                is_running = false;
-
-            std::unique_lock<std::mutex> lock(command_queue_mutex);
-            command_queue.push(command_line);
-            commandCount++;
-            lock.unlock();
+                std::unique_lock<std::mutex> lock(command_queue_mutex);
+                command_queue.push(command_line);
+                lock.unlock();
+            }
+        }
+        else {
+            is_running = false;
         }
     }
 }
@@ -560,7 +547,6 @@ void keyboard_handler_thread_func() {
 // --- Main Function ---
 int main() {
     clear_screen();
-    gotoxy(1, 1);
     std::cout << "CSOPESY CPU Scheduler Simulator\n\n";
     std::cout << "Group Developers:\n";
     std::cout << "1. Matthew Copon\n";
@@ -568,7 +554,8 @@ int main() {
     std::cout << "3. Ericson Tan\n";
     std::cout << "4. Joaquin Cardino\n";
     std::cout << "Version: 1.00.00\n\n";
-    gotoxy(12, 11 + commandCount);
+
+    std::cout << "Command >> " << std::flush;
 
     std::thread keyboard_handler_thread(keyboard_handler_thread_func);
 
@@ -576,11 +563,13 @@ int main() {
 
     while (is_running) {
         std::string command_line;
+        bool command_processed = false;
         {
             std::unique_lock<std::mutex> lock(command_queue_mutex);
             if (!command_queue.empty()) {
                 command_line = command_queue.front();
                 command_queue.pop();
+                command_processed = true;
             }
         }
 
@@ -594,7 +583,8 @@ int main() {
                     current_screen = MAIN_MENU;
                     current_process_name = "";
                     clear_screen();
-                    std::cout << "Returned to main menu.\n";
+                    std::cout << "Returned to main menu.\n\n";
+                    // The prompt will be printed below after the switch
                 }
                 else {
                     is_running = false;
@@ -603,9 +593,7 @@ int main() {
             else if (cmd == "initialize") {
                 std::ifstream configFile("config.txt");
                 if (!configFile.is_open()) {
-                    gotoxy(12, 10 + commandCount);
                     std::cerr << "ERROR: config.txt could not be opened.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::string key, value;
@@ -625,26 +613,20 @@ int main() {
                         else if (key == "delay-per-exec")
                             delays_per_exec = std::stoi(value);
                     }
-                   
+
                     cpu_busy.resize(num_cpu);
                     cpu_process_count.resize(num_cpu, 0);
 
                     initialized = true;
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "Console initialized successfully.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
             }
-            else if (cmd == "scheduler-test") {
+            else if (cmd == "scheduler-start") {
                 if (!initialized) {
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
                 else if (scheduler_running) {
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Scheduler already running.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::cout << "Scheduler started.\n";
@@ -652,7 +634,6 @@ int main() {
 
                     for (int i = 0; i < num_cpu; i++) {
                         cpu_threads.emplace_back(cpu_worker, i);
-                        commandCount++;
                     }
 
                     process_generator_thread = std::thread([&next_pid]() {
@@ -674,9 +655,7 @@ int main() {
             }
             else if (cmd == "scheduler-stop") {
                 if (!scheduler_running) {
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Scheduler not running.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     std::cout << "Stopping scheduler...\n";
@@ -691,15 +670,11 @@ int main() {
                     cpu_threads.clear();
 
                     std::cout << "Scheduler stopped.\n";
-
-                    commandCount++;
                 }
             }
             else if (cmd == "report-util") {
                 if (!initialized) {
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
-                    gotoxy(12, 11 + commandCount);
                 }
                 else {
                     report_util();
@@ -707,76 +682,67 @@ int main() {
             }
             else if (cmd == "screen") {
                 if (!initialized) {
-                    gotoxy(12, 10 + commandCount);
                     std::cout << "ERROR: Console not initialized.\n";
-                    gotoxy(12, 11 + commandCount);
-                    continue;
+                    // The prompt will be printed below after the switch
                 }
+                else {
+                    std::string subcmd;
+                    iss >> subcmd;
 
-                std::string subcmd;
-                iss >> subcmd;
+                    if (subcmd == "-s") {
+                        std::string proc_name;
+                        iss >> proc_name;
 
-                if (subcmd == "-s") {
-                    std::string proc_name;
-                    iss >> proc_name;
-
-                    if (proc_name.empty()) {
-                        std::cout << "Usage: screen -s <process_name>\n";
-                    }
-                    else {
-                        PCB* p = create_named_process(proc_name, next_pid++);
-                        {
-                            std::lock_guard<std::mutex> plock(process_map_mutex);
-                            all_processes[p->name] = p;
-                            pid_to_process[p->pid] = p;
+                        if (proc_name.empty()) {
+                            std::cout << "Usage: screen -s <process_name>\n";
                         }
-                        {
-                            std::lock_guard<std::mutex> qlock(readyQueueMutex);
-                            readyQueue.push(p);
-                        }
+                        else {
+                            PCB* p = create_named_process(proc_name, next_pid++);
+                            {
+                                std::lock_guard<std::mutex> plock(process_map_mutex);
+                                all_processes[p->name] = p;
+                                pid_to_process[p->pid] = p;
+                            }
+                            {
+                                std::lock_guard<std::mutex> qlock(readyQueueMutex);
+                                readyQueue.push(p);
+                            }
 
-                        current_screen = PROCESS_SCREEN;
-                        current_process_name = proc_name;
-                        display_process_screen(proc_name);
-                    }
-                }
-                else if (subcmd == "-r") {
-                    std::string proc_name;
-                    iss >> proc_name;
-
-                    if (proc_name.empty()) {
-                        std::cout << "Usage: screen -r <process_name>\n";
-                    }
-                    else {
-                        bool found = false;
-                        {
-                            std::lock_guard<std::mutex> lock(process_map_mutex);
-                            found = (all_processes.find(proc_name) != all_processes.end());
-                        }
-
-                        if (found) {
                             current_screen = PROCESS_SCREEN;
                             current_process_name = proc_name;
                             display_process_screen(proc_name);
                         }
+                    }
+                    else if (subcmd == "-r") {
+                        std::string proc_name;
+                        iss >> proc_name;
+
+                        if (proc_name.empty()) {
+                            std::cout << "Usage: screen -r <process_name>\n";
+                        }
                         else {
-                            std::cout << "Process '" << proc_name << "' not found.\n";
+                            bool found = false;
+                            {
+                                std::lock_guard<std::mutex> lock(process_map_mutex);
+                                found = (all_processes.find(proc_name) != all_processes.end());
+                            }
+
+                            if (found) {
+                                current_screen = PROCESS_SCREEN;
+                                current_process_name = proc_name;
+                                display_process_screen(proc_name);
+                            }
+                            else {
+                                std::cout << "Process '" << proc_name << "' not found.\n";
+                            }
                         }
                     }
-                }
-                else if (subcmd == "-ls") {
-                    if (!initialized) {
-                        gotoxy(12, 10 + commandCount);
-                        std::cout << "ERROR: Console not initialized.\n";
-                        gotoxy(12, 11 + commandCount);
-                    }
-                    else {
+                    else if (subcmd == "-ls") {
                         screen_ls();
                     }
-                }
-
-                else {
-                    std::cout << "Usage: screen -s <name> | screen -r <name> | screen -ls\n";
+                    else {
+                        std::cout << "Usage: screen -s <name> | screen -r <name> | screen -ls\n";
+                    }
                 }
             }
             else if (cmd == "process-smi") {
@@ -784,24 +750,15 @@ int main() {
                     process_smi();
                 }
                 else {
-                    std::cout << "Not in a process screen. Use 'screen -r <name>' | 'screen -s <name>' first.\n";
-                }
-            }
-            else if (cmd == "exit") {
-                if (current_screen == PROCESS_SCREEN) {
-                    current_screen = MAIN_MENU;
-                    current_process_name = "";
-                    clear_screen();
-                    std::cout << "Returned to main menu.\n";
-                }
-                else {
-                    is_running = false;
+                    std::cout << "Not in a process screen. Use 'screen -r <name>' or 'screen -s <name>' first.\n";
                 }
             }
             else {
-                gotoxy(12, 10 + commandCount);
-                std::cout << "Command not found.";
-                gotoxy(12, 11 + commandCount);
+                std::cout << "Command not found.\n";
+            }
+
+            if (is_running && command_processed) {
+                std::cout << "Command >> " << std::flush;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
