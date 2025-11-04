@@ -252,7 +252,7 @@ void execute_instruction(PCB& p, Instruction& inst) {
     case FOR_LOOP: {
         for (int i = 0; i < inst.repeatCount; i++) {
             for (auto& nested : inst.nestedInstructions) {
-                execute_instruction(p, nested);
+                execute_instruction(p, nested); 
                 if (p.finished) return;
             }
         }
@@ -269,86 +269,77 @@ void execute_instruction(PCB& p, Instruction& inst) {
 
 // --- CPU Worker ---
 void cpu_worker(int id) {
-    PCB* current = nullptr;
+    PCB* current_process = nullptr;
+    int current_run_cycles = 0; // tracks cycles for the current quantum
 
     while (scheduler_running) {
-        {
-            std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-            cpu_busy[id] = false;
-        }
-
         if (scheduler == "rr") {
-            PCB* p = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(readyQueueMutex);
+            // --- 1. Load a New Process if CPU is Idle or Previous was Preempted/Finished ---
+            if (current_process == nullptr) {
+                std::unique_lock<std::mutex> lock(readyQueueMutex);
                 if (!readyQueue.empty()) {
-                    p = readyQueue.front();
+                    current_process = readyQueue.front();
                     readyQueue.pop();
+                    current_run_cycles = 0;
                 }
             }
 
-            if (p) {
+            // --- 2. Execute or Handle Current Process ---
+            if (current_process) {
                 {
                     std::lock_guard<std::mutex> lock(cpu_stats_mutex);
                     cpu_busy[id] = true;
+                    current_process->cpu_core = id;
                 }
-                p->cpu_core = id;
 
-                if (p->sleep_ticks > 0) {
-                    p->sleep_ticks--;
-                    std::lock_guard<std::mutex> lock(readyQueueMutex);
-                    readyQueue.push(p);
-                }
-                else {
-                    execute_instruction(*p, p->instructions[p->pc]);
+                // Handle Sleep (I/O)
+                if (current_process->sleep_ticks > 0) {
+                    current_process->sleep_ticks--;
 
-                    if (p->finished) {
-                        std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-                        cpu_process_count[id]++;
-                    }
-                    else {
+                    if (current_process->sleep_ticks == 0) {
                         std::lock_guard<std::mutex> lock(readyQueueMutex);
-                        readyQueue.push(p);
+                        readyQueue.push(current_process);
                     }
+                    current_process = nullptr;
                 }
-            }
-        }
-        else if (scheduler == "fcfs") {
-            if (current == nullptr) {
-                std::lock_guard<std::mutex> lock(readyQueueMutex);
-                if (!readyQueue.empty()) {
-                    current = readyQueue.front();
-                    readyQueue.pop();
-                }
-            }
-
-            if (current) {
-                {
-                    std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-                    cpu_busy[id] = true;
-                }
-                current->cpu_core = id;
-
-                if (current->sleep_ticks > 0) {
-                    current->sleep_ticks--;
-                }
+                // Execute the instruction
                 else {
-                    execute_instruction(*current, current->instructions[current->pc]);
+                    execute_instruction(*current_process, current_process->instructions[current_process->pc]);
+                    current_run_cycles++;
 
-                    if (current->finished) {
+                    // Check for Termination
+                    if (current_process->finished) {
                         std::lock_guard<std::mutex> lock(cpu_stats_mutex);
                         cpu_process_count[id]++;
-                        current = nullptr;
+                        {
+                            std::lock_guard<std::mutex> plock(process_map_mutex);
+                            all_processes.erase(current_process->name);
+                            pid_to_process.erase(current_process->pid);
+                        }
+
+                        delete current_process;
+                        current_process = nullptr;
+                    }
+                    // Preemption
+                    else if (current_run_cycles >= quantum_cycles) {
+                        std::lock_guard<std::mutex> lock(readyQueueMutex);
+                        readyQueue.push(current_process);
+
+                        current_process = nullptr; 
                     }
                 }
+            }
+            else {
+                std::lock_guard<std::mutex> lock(cpu_stats_mutex);
+                cpu_busy[id] = false;
             }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(delays_per_exec));
     }
-
-    if (current != nullptr) {
-        delete current;
+    // moved cleanup from main to here
+    if (current_process != nullptr) {
+        delete current_process;
     }
 }
 
@@ -476,7 +467,7 @@ void report_util() {
 
     report << "CPU Utilization Report\n";
     report << "Generated: " << get_timestamp() << "\n\n";
-    report << "CPU Utilization: " << (cores_used * 100 / num_cpu) << "%\n";
+    report << "CPU Utilization: " << (static_cast<double>(cores_used) * 100.0 / num_cpu) << "%\n";
     report << "Cores used: " << cores_used << "\n";
     report << "Cores available: " << (num_cpu - cores_used) << "\n";
     report << "Running processes: " << running << "\n";
@@ -530,8 +521,6 @@ void keyboard_handler_thread_func() {
     while (is_running) {
         if (std::getline(std::cin, command_line)) {
             if (!command_line.empty()) {
-                if (command_line == "exit")
-                    is_running = false;
 
                 std::unique_lock<std::mutex> lock(command_queue_mutex);
                 command_queue.push(command_line);
@@ -584,7 +573,6 @@ int main() {
                     current_process_name = "";
                     clear_screen();
                     std::cout << "Returned to main menu.\n\n";
-                    // The prompt will be printed below after the switch
                 }
                 else {
                     is_running = false;
@@ -773,11 +761,6 @@ int main() {
             process_generator_thread.join();
         for (auto& t : cpu_threads)
             if (t.joinable()) t.join();
-    }
-
-    // Cleanup
-    for (auto& pair : all_processes) {
-        delete pair.second;
     }
 
     return 0;
