@@ -351,10 +351,10 @@ void cpu_worker(int id) {
         }
 
         // --- Update busy status (if idle) ---
-        if (current_process == nullptr) {
+        /*if (current_process == nullptr) {
             std::lock_guard<std::mutex> lock(cpu_stats_mutex);
             cpu_busy[id] = false;
-        }
+        }*/
 
         std::this_thread::sleep_for(std::chrono::milliseconds(delays_per_exec));
     }
