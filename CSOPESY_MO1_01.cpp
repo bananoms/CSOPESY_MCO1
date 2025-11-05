@@ -726,13 +726,13 @@ int main() {
                             }
                         }
                     }
-                    else if (subcmd == "-ls") {
-                        screen_ls();
-                    }
                     else {
                         std::cout << "Usage: screen -s <name> | screen -r <name> | screen -ls\n";
                     }
                 }
+            }
+            else if (cmd == "screen-ls") {
+                screen_ls();
             }
             else if (cmd == "process-smi") {
                 if (current_screen == PROCESS_SCREEN) {
