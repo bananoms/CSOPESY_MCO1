@@ -72,6 +72,7 @@ struct PCB {
     std::chrono::system_clock::time_point end_time;
     int cpu_core = -1;
     int total_instructions = 0;
+    std::mutex pcb_mutex;
 };
 
 // --- Process Management ---
@@ -252,7 +253,7 @@ void execute_instruction(PCB& p, Instruction& inst) {
     case FOR_LOOP: {
         for (int i = 0; i < inst.repeatCount; i++) {
             for (auto& nested : inst.nestedInstructions) {
-                execute_instruction(p, nested); 
+                execute_instruction(p, nested);
                 if (p.finished) return;
             }
         }
@@ -273,34 +274,44 @@ void cpu_worker(int id) {
     int current_run_cycles = 0; // tracks cycles for the current quantum
 
     while (scheduler_running) {
-        if (scheduler == "rr") {
-            // --- 1. Load a New Process if CPU is Idle or Previous was Preempted/Finished ---
-            if (current_process == nullptr) {
-                std::unique_lock<std::mutex> lock(readyQueueMutex);
-                if (!readyQueue.empty()) {
-                    current_process = readyQueue.front();
-                    readyQueue.pop();
-                    current_run_cycles = 0;
-                }
+        // --- 1. Load a New Process if CPU is Idle ---
+        if (current_process == nullptr) {
+            std::unique_lock<std::mutex> lock(readyQueueMutex);
+            if (!readyQueue.empty()) {
+                current_process = readyQueue.front();
+                readyQueue.pop();
+                current_run_cycles = 0;
+            }
+        }
+
+        // --- 2. Execute or Handle Current Process ---
+        if (current_process) {
+            bool process_finished_this_run = false;
+            bool process_preempted_this_run = false;
+
+            // --- Update CPU Busy status (Lock A) ---
+            {
+                std::lock_guard<std::mutex> lock(cpu_stats_mutex);
+                cpu_busy[id] = true;
             }
 
-            // --- 2. Execute or Handle Current Process ---
-            if (current_process) {
-                {
-                    std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-                    cpu_busy[id] = true;
-                    current_process->cpu_core = id;
-                }
+            // --- Do all process work (Lock B) ---
+            {
+                std::lock_guard<std::mutex> pcb_lock(current_process->pcb_mutex);
+
+                current_process->cpu_core = id; // Set core ID (protected by pcb_mutex)
 
                 // Handle Sleep (I/O)
                 if (current_process->sleep_ticks > 0) {
                     current_process->sleep_ticks--;
-
                     if (current_process->sleep_ticks == 0) {
-                        std::lock_guard<std::mutex> lock(readyQueueMutex);
-                        readyQueue.push(current_process);
+                        current_process->pc++; // Woke up, increment PC
+                        if (current_process->pc >= (int)current_process->instructions.size()) {
+                            current_process->finished = true;
+                            current_process->end_time = std::chrono::system_clock::now();
+                        }
                     }
-                    current_process = nullptr;
+                    process_preempted_this_run = true; // Yield CPU
                 }
                 // Execute the instruction
                 else {
@@ -309,37 +320,43 @@ void cpu_worker(int id) {
 
                     // Check for Termination
                     if (current_process->finished) {
-                        std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-                        cpu_process_count[id]++;
-                        {
-                            std::lock_guard<std::mutex> plock(process_map_mutex);
-                            all_processes.erase(current_process->name);
-                            pid_to_process.erase(current_process->pid);
-                        }
-
-                        delete current_process;
-                        current_process = nullptr;
+                        process_finished_this_run = true;
                     }
                     // Preemption
                     else if (current_run_cycles >= quantum_cycles) {
-                        std::lock_guard<std::mutex> lock(readyQueueMutex);
-                        readyQueue.push(current_process);
-
-                        current_process = nullptr; 
+                        process_preempted_this_run = true;
                     }
                 }
+            } // --- pcb_mutex (Lock B) is RELEASED here ---
+
+
+            // --- Post-cycle cleanup (NO pcb_mutex held) ---
+
+            if (process_finished_this_run) {
+                // Now it's safe to lock global stats
+                {
+                    std::lock_guard<std::mutex> lock(cpu_stats_mutex);
+                    cpu_process_count[id]++;
+                }
+                current_process = nullptr; // Drop the process
             }
-            else {
-                std::lock_guard<std::mutex> lock(cpu_stats_mutex);
-                cpu_busy[id] = false;
+            else if (process_preempted_this_run) {
+                // Sleeping or preempted, re-queue it
+                if (!current_process->finished) {
+                    std::lock_guard<std::mutex> lock(readyQueueMutex);
+                    readyQueue.push(current_process);
+                }
+                current_process = nullptr; // Give up the process
             }
         }
 
+        // --- Update busy status (if idle) ---
+        if (current_process == nullptr) {
+            std::lock_guard<std::mutex> lock(cpu_stats_mutex);
+            cpu_busy[id] = false;
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(delays_per_exec));
-    }
-    // moved cleanup from main to here
-    if (current_process != nullptr) {
-        delete current_process;
     }
 }
 
@@ -353,6 +370,7 @@ void display_process_screen(const std::string& process_name) {
     }
 
     PCB* p = all_processes[process_name];
+    std::lock_guard<std::mutex> pcb_lock(p->pcb_mutex);
     clear_screen();
 
     std::cout << "Process: " << p->name << "\n";
@@ -387,29 +405,38 @@ void process_smi() {
 }
 
 void screen_ls() {
-    std::lock_guard<std::mutex> plock(process_map_mutex);
-    std::lock_guard<std::mutex> clock(cpu_stats_mutex);
-
+    // --- 1. Calculate Global Stats (Requires Locks) ---
     int cores_used = 0;
-    for (int i = 0; i < num_cpu; i++) {
-        if (cpu_busy[i]) cores_used++;
+    {
+        std::lock_guard<std::mutex> clock(cpu_stats_mutex);
+        for (int i = 0; i < num_cpu; i++) {
+            if (cpu_busy[i]) cores_used++;
+        }
     }
 
     int running = 0, finished = 0;
-    for (const auto& pair : all_processes) {
-        if (pair.second->finished) finished++;
-        else running++;
+    std::vector<PCB*> process_list_copy;
+    {
+        // Copy the process pointers to iterate outside of the global lock
+        std::lock_guard<std::mutex> plock(process_map_mutex);
+        for (const auto& pair : all_processes) {
+            process_list_copy.push_back(pair.second);
+            if (pair.second->finished) finished++;
+            else running++;
+        }
     }
 
+    // --- 2. Display Stats ---
     std::cout << "\nCPU Utilization: " << (cores_used * 100 / num_cpu) << "%\n";
     std::cout << "Cores used: " << cores_used << "\n";
     std::cout << "Cores available: " << (num_cpu - cores_used) << "\n";
     std::cout << "\nRunning processes: " << running << "\n";
     std::cout << "Finished processes: " << finished << "\n";
-    std::cout << "\n--------------------------------------\n";
+    std::cout << "+---------------+--------------------------+----------+-----------------------------------+" << std::endl;
 
-    for (const auto& pair : all_processes) {
-        PCB* p = pair.second;
+    // --- 3. Display Table (Acquire PCB lock one at a time) ---
+    for (PCB* p : process_list_copy) {
+        std::lock_guard<std::mutex> pcb_lock(p->pcb_mutex);
 
         auto time = std::chrono::system_clock::to_time_t(p->start_time);
         std::tm timeinfo;
@@ -421,19 +448,26 @@ void screen_ls() {
 
         std::stringstream ss;
         ss << std::put_time(&timeinfo, "%m/%d/%Y %I:%M:%S%p");
-
-        std::cout << p->name << "    (" << ss.str() << ")    ";
-
+        std::cout << "| " << std::left << std::setw(14) << p->name << "| ";
+        std::cout << " (" << ss.str() << ") " << "| ";
         if (p->finished) {
-            std::cout << "Finished    ";
+            std::cout << std::right << std::setw(7) << "Done" << "| ";
         }
         else {
-            std::cout << "Core: " << p->cpu_core << "    ";
+            std::cout << std::right << std::setw(7) << "Core: " << p->cpu_core << " | ";
+            //std::cout << p->cpu_core << "    ";
         }
+        int barWidth = 20;
+        int filled = (p->pc * barWidth) / p->total_instructions;
 
-        std::cout << p->pc << " / " << p->total_instructions << "\n";
+        std::cout << "[";
+        for (int i = 0; i < barWidth; i++) {
+            if (i < filled) std::cout << "=";
+            else std::cout << " ";
+        }
+        std::cout << "] " << std::right << std::setw(3) << p->pc << " / " << p->total_instructions << " |\n";
     }
-    std::cout << "--------------------------------------\n\n";
+    std::cout << "+---------------+--------------------------+----------+-----------------------------------+" << std::endl;
 }
 
 void report_util() {
@@ -477,6 +511,7 @@ void report_util() {
 
     report << "Running processes:\n";
     for (PCB* p : running_processes) {
+        std::lock_guard<std::mutex> pcb_lock(p->pcb_mutex);
         auto time = std::chrono::system_clock::to_time_t(p->start_time);
         std::tm timeinfo;
 #ifdef _WIN32
@@ -494,6 +529,7 @@ void report_util() {
 
     report << "\nFinished processes:\n";
     for (PCB* p : finished_processes) {
+        std::lock_guard<std::mutex> pcb_lock(p->pcb_mutex);
         auto time = std::chrono::system_clock::to_time_t(p->start_time);
         std::tm timeinfo;
 #ifdef _WIN32
@@ -592,7 +628,7 @@ int main() {
                             scheduler = value.substr(1, value.size() - 2);
                         else if (key == "quantum-cycles")
                             quantum_cycles = std::stoi(value);
-                        else if (key == "batch-process-freq")
+                        else if (key == "batch-processes-freq")
                             batch_process_freq = std::stoi(value);
                         else if (key == "min-ins")
                             min_ins = std::stoi(value);
@@ -601,6 +637,8 @@ int main() {
                         else if (key == "delay-per-exec")
                             delays_per_exec = std::stoi(value);
                     }
+
+                    std::cout << batch_process_freq;
 
                     cpu_busy.resize(num_cpu);
                     cpu_process_count.resize(num_cpu, 0);
@@ -656,6 +694,12 @@ int main() {
                         if (t.joinable()) t.join();
                     }
                     cpu_threads.clear();
+
+                    {
+                        std::lock_guard<std::mutex> lock(cpu_stats_mutex);
+                        // Set all cores back to false (idle)
+                        std::fill(cpu_busy.begin(), cpu_busy.end(), false);
+                    }
 
                     std::cout << "Scheduler stopped.\n";
                 }
@@ -752,9 +796,9 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    if (keyboard_handler_thread.joinable())
-        keyboard_handler_thread.join();
+    std::cout << "Cleaning up resources..." << std::endl;
 
+    // Stop the scheduler if it's still running
     if (scheduler_running) {
         scheduler_running = false;
         if (process_generator_thread.joinable())
@@ -763,5 +807,28 @@ int main() {
             if (t.joinable()) t.join();
     }
 
+    if (keyboard_handler_thread.joinable())
+        keyboard_handler_thread.join();
+
+    // Clean up all processes
+    {
+        std::lock_guard<std::mutex> lock(process_map_mutex);
+        for (auto& pair : all_processes) {
+            delete pair.second; // Delete the PCB object
+        }
+        all_processes.clear();
+        pid_to_process.clear();
+    }
+
+    // Clean up any remaining processes in the ready queue
+    {
+        std::lock_guard<std::mutex> lock(readyQueueMutex);
+        while (!readyQueue.empty()) {
+            delete readyQueue.front();
+            readyQueue.pop();
+        }
+    }
+
+    std::cout << "Cleanup complete. Exiting." << std::endl;
     return 0;
 }
