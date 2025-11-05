@@ -305,7 +305,7 @@ void cpu_worker(int id) {
                 if (current_process->sleep_ticks > 0) {
                     current_process->sleep_ticks--;
                     if (current_process->sleep_ticks == 0) {
-                        current_process->pc++; // Woke up, increment PC
+                        current_process->pc++; 
                         if (current_process->pc >= (int)current_process->instructions.size()) {
                             current_process->finished = true;
                             current_process->end_time = std::chrono::system_clock::now();
@@ -333,12 +333,12 @@ void cpu_worker(int id) {
             // --- Post-cycle cleanup (NO pcb_mutex held) ---
 
             if (process_finished_this_run) {
-                // Now it's safe to lock global stats
+                // lock global stats
                 {
                     std::lock_guard<std::mutex> lock(cpu_stats_mutex);
                     cpu_process_count[id]++;
                 }
-                current_process = nullptr; // Drop the process
+                current_process = nullptr; 
             }
             else if (process_preempted_this_run) {
                 // Sleeping or preempted, re-queue it
@@ -346,7 +346,7 @@ void cpu_worker(int id) {
                     std::lock_guard<std::mutex> lock(readyQueueMutex);
                     readyQueue.push(current_process);
                 }
-                current_process = nullptr; // Give up the process
+                current_process = nullptr;
             }
         }
 
@@ -638,8 +638,6 @@ int main() {
                             delays_per_exec = std::stoi(value);
                     }
 
-                    std::cout << batch_process_freq;
-
                     cpu_busy.resize(num_cpu);
                     cpu_process_count.resize(num_cpu, 0);
 
@@ -715,7 +713,6 @@ int main() {
             else if (cmd == "screen") {
                 if (!initialized) {
                     std::cout << "ERROR: Console not initialized.\n";
-                    // The prompt will be printed below after the switch
                 }
                 else {
                     std::string subcmd;
