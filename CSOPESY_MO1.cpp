@@ -32,6 +32,11 @@ int max_ins;
 int min_ins;
 int delays_per_exec;
 
+int max_overall_mem;
+int mem_per_frame;
+int min_mem_per_proc;
+int max_mem_per_proc;
+
 // Command queue
 std::queue<std::string> command_queue;
 std::mutex command_queue_mutex;
@@ -636,6 +641,14 @@ int main() {
                             max_ins = std::stoi(value);
                         else if (key == "delay-per-exec")
                             delays_per_exec = std::stoi(value);
+                        else if (key == "max-overall-mem")
+                            max_overall_mem = std::stoi(value);
+                        else if (key == "mem-per-frame")
+                            mem_per_frame = std::stoi(value);
+                        else if (key == "min-mem-per-proc")
+                            min_mem_per_proc = std::stoi(value);
+                        else if (key == "max-mem-per-proc")
+                            max_mem_per_proc = std::stoi(value); 
                     }
 
                     cpu_busy.resize(num_cpu);
