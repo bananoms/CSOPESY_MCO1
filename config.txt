@@ -5,3 +5,17 @@ batch-processes-freq 1
 min-ins 1000
 max-ins 2000
 delay-per-exec 0
+
+max-overall-mem 
+Maximum memory available in bytes.
+
+mem-per-frame 
+The size of memory in bytes per frame. This is also the memory size per page. The total number of frames is equal to max-overall-mem / mem-per-frame.
+
+min-mem-per-proc 
+Memory required for each process created via the “scheduler_start” command. 
+
+Let P be the number of pages required by a process and M is the rolled value between min-mem-per-proc and max-mem-proc. 
+P can be computed as M / mem-per-frame.
+
+max-mem-per-proc
